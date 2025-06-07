@@ -1,3 +1,4 @@
+import os
 import threading
 import json
 import queue
@@ -72,7 +73,7 @@ class TestManager:
             max_duration = max(max_duration, scenario.duration)
             for ix in range(scenario.quantity):
                 command_queue = queue.Queue()
-                name = "%s-%s" % (scenario.name, ix)
+                name = "%s-%s" % (scenario.name,  ix)
                 testers.append(Tester(
                     name = name,
                     p = threading.Thread(target=process,
@@ -107,7 +108,6 @@ class TestManager:
                 tester.p.join()
 
         print("===== duration: %.1f" % round(time() - start_ts))
-        return
         for tester in testers:
             try:
                 print(tester.q.get(block = False))
@@ -117,11 +117,12 @@ class TestManager:
     def perform_p(self):
         testers = []
         max_duration = 0
+        pid = os.getpid()
         for scenario in self._scenarios:
             max_duration = max(max_duration, scenario.duration)
             for ix in range(scenario.quantity):
                 command_queue = Queue()
-                name = "%s-%s" % (scenario.name, ix)
+                name = "%s-%d-%d" % (scenario.name, pid, ix)
                 testers.append(Tester(
                     name = name,
                     p = Process(target=process,
@@ -141,7 +142,7 @@ class TestManager:
                 break
             print("Tester %s started" % tester.name)
             tester.p.start()
-            sleep(0.1)
+            sleep(0.01)
 
         print("Test scenarios estimated run time:", max_duration, "seconds")
 
@@ -416,9 +417,9 @@ def main():
     # server = "gnode-2.local"
     # server = "127.0.0.1"
     # server = "mqtt.iotplan.io"
-    # server = "192.168.1.100"
+    server = "192.168.1.100"
     # server = "94.16.123.241"
-    server = "192.168.0.71"
+    # server = "192.168.0.71"
 
     mqtt_sender_options = dict(
         server = "%s" % server,
@@ -453,12 +454,12 @@ def main():
         pause = 0
     )
 
-    DURATION = 4
-    tester.add(TestScenario("S1", 200, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
+    DURATION = 10
+    tester.add(TestScenario("S1", 100, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
     #tester.add(TestScenario("S2", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options, http_receiver_options))
     #tester.add(TestScenario("S3", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options2, http_receiver_options))
 
-    tester.perform_t()
+    tester.perform_p()
 
     #tester.perform(10, 2, HTTPSender, MQTTReceiver, http_sender_options, receiver_options)
 
