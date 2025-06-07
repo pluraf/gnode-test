@@ -65,7 +65,56 @@ class TestManager:
     def add(self, scenario):
         self._scenarios.append(scenario)
 
-    def perform(self):
+    def perform_t(self):
+        testers = []
+        max_duration = 0
+        for scenario in self._scenarios:
+            max_duration = max(max_duration, scenario.duration)
+            for ix in range(scenario.quantity):
+                command_queue = queue.Queue()
+                name = "%s-%s" % (scenario.name, ix)
+                testers.append(Tester(
+                    name = name,
+                    p = threading.Thread(target=process,
+                            args=(name,
+                                command_queue,
+                                scenario.sender_class,
+                                scenario.receiver_class,
+                                scenario.sender_options,
+                                scenario.receiver_options
+                            )
+                    ),
+                    q = command_queue
+                ))
+
+        for tester in testers:
+            if self._stop_earlier_flag:
+                break
+            print("Tester %s started" % tester.name)
+            tester.p.start()
+
+        print("Test scenarios estimated run time:", max_duration, "seconds")
+
+        start_ts = time()
+        while(start_ts + max_duration > time() and not self._stop_earlier_flag):
+            sleep(1)
+
+        for tester in testers:
+            tester.q.put("stop")
+
+        for tester in testers:
+            if tester.p.is_alive():
+                tester.p.join()
+
+        print("===== duration: %.1f" % round(time() - start_ts))
+        return
+        for tester in testers:
+            try:
+                print(tester.q.get(block = False))
+            except Empty:
+                print(tester.name, "No report from tester!")
+
+    def perform_p(self):
         testers = []
         max_duration = 0
         for scenario in self._scenarios:
@@ -88,9 +137,13 @@ class TestManager:
                 ))
 
         for tester in testers:
+            if self._stop_earlier_flag:
+                break
+            print("Tester %s started" % tester.name)
             tester.p.start()
+            sleep(0.1)
 
-        print("Test scenarios run for", max_duration, "seconds")
+        print("Test scenarios estimated run time:", max_duration, "seconds")
 
         start_ts = time()
         while(start_ts + max_duration > time() and not self._stop_earlier_flag):
@@ -100,7 +153,8 @@ class TestManager:
             tester.q.put("stop")
 
         for tester in testers:
-            tester.p.join()
+            if tester.p.is_alive():
+                tester.p.join()
 
         print("===== duration: %.1f" % round(time() - start_ts))
         for tester in testers:
@@ -144,6 +198,7 @@ class SRTester:
         r_thread.start()
         sleep(1)  # Make sure receiving thread is running when sending thread starts to send
         s_thread.start()
+        start_ts = time()
 
         while True:
             try:
@@ -161,19 +216,26 @@ class SRTester:
 
         self._database_unacknowledged.difference_update(self._database_orphaned)
 
-        report = "%s: sent messages: %d; received messages: %d; lost messages: %d%%" % (
+        duration = time() - start_ts
+        report = "%s: run time: %d sec; sent messages: %d; received messages: %d; lost messages: %d%%; rate: %d msg/sec" % (
             self._sender.name,
+            duration,
             self._sender.count,
             self._receiver.count,
-            round((len(self._database_unacknowledged) / self._sender.count) * 100)
+            round((len(self._database_unacknowledged) / self._sender.count) * 100),
+            round((self._sender.count - len(self._database_unacknowledged)) / duration)
         )
         bi_queue.put(report)
 
     def send(self):
         while self._active:
-            msg_id = self._sender.send()
-            with self._lock:
-                self._database_unacknowledged.add(msg_id)
+            try:
+                msg_id = self._sender.send()
+            except Exception as e:
+                print(e)
+            else:
+                with self._lock:
+                    self._database_unacknowledged.add(msg_id)
             self._sender.sleep()
 
     def receive(self):
@@ -211,7 +273,8 @@ class MessageSender(ABC):
     def send(self): pass
 
     def sleep(self):
-        sleep(self._pause)
+        if self._pause > 0:
+            sleep(self._pause)
 
     def stop(self):
         pass
@@ -350,15 +413,19 @@ def process(name, command_queue, sender_class, receiver_class, sender_options, r
 
 def main():
     tester = TestManager()
-    server = "gnode-2.local"
+    # server = "gnode-2.local"
     # server = "127.0.0.1"
+    # server = "mqtt.iotplan.io"
+    # server = "192.168.1.100"
+    # server = "94.16.123.241"
+    server = "192.168.0.71"
 
     mqtt_sender_options = dict(
         server = "%s" % server,
         topic = "/{name}/test/topic",
         qos = 0,
         data_length = 100,
-        pause = 0
+        pause = 0.1
     )
     http_sender_options = dict(
         server = "http://%s" % server,
@@ -386,12 +453,12 @@ def main():
         pause = 0
     )
 
-    DURATION = 10
-    tester.add(TestScenario("S1", 1, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
-    tester.add(TestScenario("S2", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options, http_receiver_options))
-    tester.add(TestScenario("S3", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options2, http_receiver_options))
+    DURATION = 4
+    tester.add(TestScenario("S1", 200, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
+    #tester.add(TestScenario("S2", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options, http_receiver_options))
+    #tester.add(TestScenario("S3", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options2, http_receiver_options))
 
-    tester.perform()
+    tester.perform_t()
 
     #tester.perform(10, 2, HTTPSender, MQTTReceiver, http_sender_options, receiver_options)
 
