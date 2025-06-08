@@ -5,6 +5,7 @@ import queue
 import requests
 import base64
 import signal
+import copy
 
 from collections import namedtuple
 from abc import ABC, abstractmethod
@@ -19,12 +20,14 @@ Tester = namedtuple('Tester', ['name', 'p', 'q'])
 
 
 class TestScenario:
-    def __init__(self, name, quantity, duration, sender_class, receiver_class, sender_options, receiver_options):
+    def __init__(self, name, quantity, duration, provisioner_class, sender_class, receiver_class, provisioner_options, sender_options, receiver_options):
         self._name = name
         self._quantity = quantity
         self._duration = duration
+        self._provisioner_class = provisioner_class
         self._sender_class = sender_class
         self._receiver_class = receiver_class
+        self._provisioner_options = provisioner_options
         self._sender_options = sender_options
         self._receiver_options = receiver_options
 
@@ -41,12 +44,20 @@ class TestScenario:
         return self._duration
 
     @property
+    def provisioner_class(self):
+        return self._provisioner_class
+
+    @property
     def sender_class(self):
         return self._sender_class
 
     @property
     def receiver_class(self):
         return self._receiver_class
+
+    @property
+    def provisioner_options(self):
+        return self._provisioner_options
 
     @property
     def sender_options(self):
@@ -128,8 +139,10 @@ class TestManager:
                     p = Process(target=process,
                             args=(name,
                                 command_queue,
+                                scenario.provisioner_class,
                                 scenario.sender_class,
                                 scenario.receiver_class,
+                                scenario.provisioner_options,
                                 scenario.sender_options,
                                 scenario.receiver_options
                             )
@@ -171,29 +184,39 @@ class TestManager:
 
 
 class SRTester:
-    def __init__(self, name, sender_class, receiver_class, sender_options, receiver_options):
+    def __init__(self, name, provisioner_class, sender_class, receiver_class, provisioner_options, sender_options, receiver_options):
         self._name = name
-        sender = sender_class(name, **self.prepare_options(sender_options))
-        receiver = receiver_class(name, **self.prepare_options(receiver_options))
-        self._sender = sender
-        self._receiver = receiver
+        self._provisioner = provisioner_class(name, **self.prepare_options(provisioner_options))
+        self._sender = sender_class(name, **self.prepare_options(sender_options))
+        self._receiver = receiver_class(name, **self.prepare_options(receiver_options))
         self._lock = threading.Lock()
         self._database_unacknowledged = set()
         self._database_orphaned = set()
 
+    @staticmethod
+    def substitute(template, env):
+        if isinstance(template, str):
+            return template.format(**env)
+        if isinstance(template, dict):
+            acceptor = dict()
+            for key in template:
+                acceptor[key] = SRTester.substitute(template[key], env)
+        elif isinstance(template, list):
+            acceptor = list()
+            for ix in range(len(template)):
+                acceptor.append(SRTester.substitute(template[ix], env))
+        else:
+            acceptor = copy.copy(template)
+        return acceptor
+
     def prepare_options(self, options_template):
-        options = {}
-        for opt_name in options_template:
-            opt_value = options_template[opt_name]
-            if isinstance(opt_value, str):
-                options[opt_name] = opt_value.format(name = self._name)
-            else:
-                options[opt_name] = opt_value
-        return options
+        return SRTester.substitute(options_template, {"name": self._name})
 
     def run(self, bi_queue):
         s_thread = threading.Thread(target=self.send)
         r_thread = threading.Thread(target=self.receive)
+
+        self._provisioner.provide()
 
         self._active = True
         r_thread.start()
@@ -218,13 +241,13 @@ class SRTester:
         self._database_unacknowledged.difference_update(self._database_orphaned)
 
         duration = time() - start_ts
-        report = "%s: run time: %d sec; sent messages: %d; received messages: %d; lost messages: %d%%; rate: %d msg/sec" % (
+        report = "%s: run time: %d sec; sent messages: %d; received messages: %d; lost messages: %d%%; rate: %0.2f msg/sec" % (
             self._sender.name,
             duration,
             self._sender.count,
             self._receiver.count,
             round((len(self._database_unacknowledged) / self._sender.count) * 100),
-            round((self._sender.count - len(self._database_unacknowledged)) / duration)
+            (self._sender.count - len(self._database_unacknowledged)) / duration
         )
         bi_queue.put(report)
 
@@ -234,6 +257,7 @@ class SRTester:
                 msg_id = self._sender.send()
             except Exception as e:
                 print(e)
+                sleep(1)
             else:
                 with self._lock:
                     self._database_unacknowledged.add(msg_id)
@@ -403,12 +427,35 @@ class HTTPSender(MessageSender):
 
         if resp.status_code != 200:
             print(f"Failure: {resp.status_code}")
-
         return payload["msg_id"]
 
 
-def process(name, command_queue, sender_class, receiver_class, sender_options, receiver_options):
-    tester = SRTester(name, sender_class, receiver_class, sender_options, receiver_options)
+class Provisioner:
+    def __init__(self, tester_name, channel, pipeline, pipeline_url, channel_url, pipeline_start_url):
+        self._channel = channel
+        self._pipeline = pipeline
+        self._pipeline_url = pipeline_url
+        self._channel_url = channel_url
+        self._pipeline_start_url = pipeline_start_url
+        self._name = "%s-%s" % (tester_name, self.__class__.__name__)
+
+    def provide(self):
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        headers = {
+            "Authorization": "Bearer RtPwI7APdmhmkoFoOGxGIyUq65RGftBrIXnrD96ouc0CXFKBvW"
+        }
+        r = requests.post(self._channel_url, json = self._channel, verify = False, headers = headers)
+        r.raise_for_status()
+        r = requests.post(self._pipeline_url, json = self._pipeline, verify = False, headers = headers)
+        r.raise_for_status()
+        r = requests.put(self._pipeline_start_url, verify = False, headers = headers)
+        r.raise_for_status()
+        sleep(2)
+
+
+def process(name, command_queue, provisioner_class, sender_class, receiver_class, provisioner_options, sender_options, receiver_options):
+    tester = SRTester(name, provisioner_class, sender_class, receiver_class, provisioner_options, sender_options, receiver_options)
     tester.run(command_queue)
 
 
@@ -425,15 +472,15 @@ def main():
         server = "%s" % server,
         topic = "/{name}/test/topic",
         qos = 0,
-        data_length = 100,
-        pause = 0.1
+        data_length = 1024 * 1024 * 1,
+        pause = 0
     )
     http_sender_options = dict(
         server = "http://%s" % server,
-        path = "/channel/http/http_channel",
+        path = "/channel/http/{name}",
         method = HTTPSender.POST,
-        data_length = 100,
-        pause = 0
+        data_length = 1,
+        pause = 0.01
     )
     mqtt_receiver_options = dict(
         server = "%s" % server,
@@ -442,7 +489,7 @@ def main():
     )
     http_receiver_options = dict(
         server = "%s" % server,
-        topic = "/from_http",
+        topic = "queue{name}",
         qos = 0
     )
 
@@ -454,9 +501,32 @@ def main():
         pause = 0
     )
 
-    DURATION = 10
-    tester.add(TestScenario("S1", 100, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
-    #tester.add(TestScenario("S2", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options, http_receiver_options))
+    provisioner_options = dict(
+        channel = {
+            "type": "http",
+            "authtype": "none",
+            "enabled": True,
+            "queue_name": "queue{name}"
+        },
+        pipeline = {
+            "connector_in": {
+                "type": "queue",
+                "name": "queue{name}"
+
+            },
+            "connector_out": {
+                "type": "mqtt",
+                "topic": "queue{name}"
+            }
+        },
+        pipeline_url = "https://%s/api/pipeline/config/{name}" % server,
+        channel_url = "https://%s/api/channel/{name}" % server,
+        pipeline_start_url = "https://%s/api/pipeline/control/start/{name}" % server,
+    )
+
+    DURATION = 20
+    #tester.add(TestScenario("S1", 100, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
+    tester.add(TestScenario("S2", 500, DURATION, Provisioner, HTTPSender, MQTTReceiver, provisioner_options, http_sender_options, http_receiver_options))
     #tester.add(TestScenario("S3", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options2, http_receiver_options))
 
     tester.perform_p()
