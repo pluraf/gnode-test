@@ -241,12 +241,12 @@ class SRTester:
         self._database_unacknowledged.difference_update(self._database_orphaned)
 
         duration = time() - start_ts
-        report = "%s: run time: %d sec; sent messages: %d; received messages: %d; lost messages: %d%%; rate: %0.2f msg/sec" % (
+        report = "%s: run time: %d sec; sent messages: %d; received messages: %d; lost messages: %0.2f%%; rate: %0.2f msg/sec" % (
             self._sender.name,
             duration,
             self._sender.count,
             self._receiver.count,
-            round((len(self._database_unacknowledged) / self._sender.count) * 100),
+            (len(self._database_unacknowledged) / self._sender.count) * 100,
             (self._sender.count - len(self._database_unacknowledged)) / duration
         )
         bi_queue.put(report)
@@ -480,7 +480,7 @@ def main():
         path = "/channel/http/{name}",
         method = HTTPSender.POST,
         data_length = 1,
-        pause = 0.01
+        pause = 0.1
     )
     mqtt_receiver_options = dict(
         server = "%s" % server,
@@ -524,9 +524,9 @@ def main():
         pipeline_start_url = "https://%s/api/pipeline/control/start/{name}" % server,
     )
 
-    DURATION = 20
+    DURATION = 7200
     #tester.add(TestScenario("S1", 100, DURATION, MQTTSender, MQTTReceiver, mqtt_sender_options, mqtt_receiver_options))
-    tester.add(TestScenario("S2", 500, DURATION, Provisioner, HTTPSender, MQTTReceiver, provisioner_options, http_sender_options, http_receiver_options))
+    tester.add(TestScenario("S2", 50, DURATION, Provisioner, HTTPSender, MQTTReceiver, provisioner_options, http_sender_options, http_receiver_options))
     #tester.add(TestScenario("S3", 1, DURATION, HTTPSender, MQTTReceiver, http_sender_options2, http_receiver_options))
 
     tester.perform_p()
